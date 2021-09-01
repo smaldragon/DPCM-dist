@@ -1,0 +1,15 @@
+[package]
+name = "dpcm-dist"
+version = "0.1.0"
+edition = "2018"
+author = ["Smal"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+vst = { git = "https://github.com/rustaudio/vst-rs" }
+time = "0.1"
+
+[lib]
+name = "dpcm_distort"
+crate-type = ["cdylib"]
