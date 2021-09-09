@@ -1,11 +1,3 @@
-// TODO
-// add bit-depth
-// add configurable reverse bit size (mostly)
-// add a lowpass filter (?)
-// make independent of daw sample rate (how?)
-// - start at crazy high sample rate
-// - downsample to nes
-// - upsample   to target
 // author: smal
 
 #[macro_use]
@@ -30,6 +22,7 @@ struct EffectData {
     delta_o: i32,
     delta_v: i32,
     zero_count: i32,
+    sample_wait: f32,
 }
 impl Default for EffectData {
     fn default() -> EffectData {
@@ -39,7 +32,8 @@ impl Default for EffectData {
             queue_i: 0,          // the queue index
             delta_v: 0,                         // the current delta
             delta_o: 0,                         // the output delta
-            zero_count: 0,                      // disables the dpcm if enough zero samples have passed 
+            zero_count: 0,                      // disables the dpcm if enough zero samples have passed
+            sample_wait: 0.0,
         }
     }
 }
@@ -47,6 +41,7 @@ struct GainEffect {
     // Store a handle to the plugin's parameter object.
     params: Arc<GainEffectParameters>,
     data: [EffectData;2],
+    sample_rate: f32,
 }
 
 /// The plugin's parameter object contains the values of parameters that can be
@@ -83,12 +78,13 @@ impl Plugin for GainEffect {
         GainEffect {
             params: Arc::new(GainEffectParameters::default()),
             data: [EffectData::default(),EffectData::default()],
+            sample_rate: 44100.0,
         }
     }
 
     fn get_info(&self) -> Info {
         Info {
-            name: "DPCM Distortion".to_string(),
+            name: "DPCM Distortion Reloaded".to_string(),
             vendor: "smal".to_string(),
             unique_id: 243723072,
             version: 1,
@@ -100,6 +96,10 @@ impl Plugin for GainEffect {
             category: Category::Effect,
             ..Default::default()
         }
+    }
+    
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
     }
 
     // Here is where the bulk of our audio processing code goes.
@@ -117,77 +117,78 @@ impl Plugin for GainEffect {
             // Next, we'll loop through each individual sample so we can apply the amplitude
             // value to it.
             for (input_sample, output_sample) in input_buffer.iter().zip(output_buffer) {
-                let comp = (*input_sample * (depth as f32) * amplitude) as i32;
-                let _comp_back = (comp as f32)/(depth as f32);
-                if (comp >= self.data[c].delta_v && self.data[c].delta_v < depth) || self.data[c].delta_v <= -depth {
-                    self.data[c].queue_n[self.data[c].queue_i] = 1;
-                    self.data[c].delta_v += 1;
-                } else {
-                    self.data[c].queue_n[self.data[c].queue_i] = -1;
-                    self.data[c].delta_v -= 1;
+                self.data[c].sample_wait += self.sample_rate / 33144.0;
+                let advance_delta = self.data[c].sample_wait >= 1.0;
+                if advance_delta {
+                    self.data[c].sample_wait -= 1.0;
+                    let comp = (*input_sample * (depth as f32) * amplitude) as i32;
+                    let _comp_back = (comp as f32)/(depth as f32);
+                    if (comp >= self.data[c].delta_v && self.data[c].delta_v < depth) || self.data[c].delta_v <= -depth {
+                        self.data[c].queue_n[self.data[c].queue_i] = 1;
+                        self.data[c].delta_v += 1;
+                    } else {
+                        self.data[c].queue_n[self.data[c].queue_i] = -1;
+                        self.data[c].delta_v -= 1;
+                    }
+                    /*else if comp < self.data[c].delta_v || comp != 0 || true {
+                        self.data[c].queue_n[self.data[c].queue_i] = -1;
+                        self.data[c].delta_v -= 1;
+                    } else {
+                        self.data[c].queue_n[self.data[c].queue_i] = 0;
+                    }
+                    */
+                    self.data[c].delta_o += self.data[c].queue_d[self.data[c].queue_i];
+                    
+                    
+                    // Clamp the deltas:
+                    if self.data[c].delta_v > depth {
+                        self.data[c].delta_v = depth;
+                    } else if self.data[c].delta_v < -depth {
+                        self.data[c].delta_v = -depth;
+                    }
+                    if self.data[c].delta_o > depth {
+                        self.data[c].delta_o = depth;
+                    } else if self.data[c].delta_o < -depth {
+                        self.data[c].delta_o = -depth;
+                    }
+                    
+                    
+                    /*let comp_sample;
+                    if comp != 0 {
+                         comp_sample = (self.data[c].delta_o as f32)/16.0;
+                    } else {
+                        comp_sample = 0.0;
+                    }*/
+                    
+                    if comp == 0 {
+                        self.data[c].zero_count += 1;   
+                    } else {
+                        self.data[c].zero_count = 0;
+                    }
                 }
-                /*else if comp < self.data[c].delta_v || comp != 0 || true {
-                    self.data[c].queue_n[self.data[c].queue_i] = -1;
-                    self.data[c].delta_v -= 1;
-                } else {
-                    self.data[c].queue_n[self.data[c].queue_i] = 0;
-                }
-                */
-                self.data[c].delta_o += self.data[c].queue_d[self.data[c].queue_i];
-                
-                
-                // Clamp the deltas:
-                if self.data[c].delta_v > depth {
-                    self.data[c].delta_v = depth;
-                } else if self.data[c].delta_v < -depth {
-                    self.data[c].delta_v = -depth;
-                }
-                if self.data[c].delta_o > depth {
-                    self.data[c].delta_o = depth;
-                } else if self.data[c].delta_o < -depth {
-                    self.data[c].delta_o = -depth;
-                }
-                
-                
-                /*let comp_sample;
-                if comp != 0 {
-                     comp_sample = (self.data[c].delta_o as f32)/16.0;
-                } else {
-                    comp_sample = 0.0;
-                }*/
-                
-                if comp == 0 {
-                    self.data[c].zero_count += 1;   
-                } else {
-                    self.data[c].zero_count = 0;
-                }
-                
                 let comp_sample;
                 if self.data[c].zero_count < 16 {
                     comp_sample = (self.data[c].delta_o as f32)/(depth as f32);
                 } else {
                     comp_sample = 0.0;
                 }
-                *output_sample = (((comp_sample * mix)) + (*input_sample * (1.0-mix) * amplitude))/amplitude;
-                self.data[c].queue_i += 1;
-                if (reversebit != 0 && self.data[c].queue_i >= reversebit) || (reversebit == 0 && self.data[c].queue_i >= 8){
-                //if self.data[c].queue_i >= 8 {
-                    self.data[c].queue_i = 0;
-                    if reversebit == 0 {
-                        self.data[c].queue_d = self.data[c].queue_n;
-                    } else {
-                    //self.data[c].queue_d[0] = self.data[c].queue_n[0];
-                        for i in 0..reversebit {
-                            self.data[c].queue_d[i] = self.data[c].queue_n[reversebit-i-1];
+                if advance_delta {
+                    self.data[c].queue_i += 1;
+                    if (reversebit != 0 && self.data[c].queue_i >= reversebit) || (reversebit == 0 && self.data[c].queue_i >= 8){
+                    //if self.data[c].queue_i >= 8 {
+                        self.data[c].queue_i = 0;
+                        if reversebit == 0 {
+                            self.data[c].queue_d = self.data[c].queue_n;
+                        } else {
+                        //self.data[c].queue_d[0] = self.data[c].queue_n[0];
+                            for i in 0..reversebit {
+                                self.data[c].queue_d[i] = self.data[c].queue_n[reversebit-i-1];
+                            }
                         }
                     }
-                    /*for i in 0..reversebit {
-                        self.data[c].queue_d[0] = self.data[c].queue_n[0
-                        self.data[c].queue_d[i] = self.data[c].queue_n[reversebit-1-i]
-                    }*/
-                    //self.data[c].queue_n.reverse();
-                    //self.data[c].queue_d = self.data[c].queue_n;
                 }
+                
+                *output_sample = (((comp_sample * mix)) + (*input_sample * (1.0-mix) * amplitude))/amplitude;
             }
             c += 1;
         }
